@@ -86,6 +86,15 @@ func (a *Application) UpgradeChecker() *UpgradeChecker {
 	return a.upgradeChecker
 }
 
+// distributedDB returns the PostgreSQL database for distributed coordination,
+// or nil in standalone mode.
+func (a *Application) distributedDB() *gorm.DB {
+	if a.distributed != nil {
+		return a.authDB
+	}
+	return nil
+}
+
 func (a *Application) AgentPoolService() *agentpool.AgentPoolService {
 	return a.agentPoolService.Load()
 }

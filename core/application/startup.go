@@ -231,9 +231,11 @@ func New(opts ...config.AppOption) (*Application, error) {
 		xlog.Error("error registering external backends", "error", err)
 	}
 
-	// Start background upgrade checker for backends
+	// Start background upgrade checker for backends.
+	// In distributed mode, uses PostgreSQL advisory lock so only one frontend
+	// instance runs periodic checks (avoids duplicate upgrades across replicas).
 	if len(options.BackendGalleries) > 0 {
-		uc := NewUpgradeChecker(options, application.ModelLoader())
+		uc := NewUpgradeChecker(options, application.ModelLoader(), application.distributedDB())
 		application.upgradeChecker = uc
 		go uc.Run(options.Context)
 	}
