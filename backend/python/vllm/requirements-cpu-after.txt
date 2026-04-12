@@ -1,0 +1,1 @@
+https://github.com/vllm-project/vllm/releases/download/v0.8.5/vllm-0.8.5+cpu-cp38-abi3-manylinux_2_35_x86_64.whl
