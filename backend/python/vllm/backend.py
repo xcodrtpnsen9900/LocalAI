@@ -453,7 +453,13 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
         if self.tool_parser_cls and request.Tools:
             try:
                 tools = json.loads(request.Tools)
-                tp = self.tool_parser_cls(self.tokenizer, tools=tools)
+                # Some concrete parsers only accept the tokenizer; only the
+                # abstract base declares the tools kwarg. Try with tools first,
+                # fall back to tokenizer-only.
+                try:
+                    tp = self.tool_parser_cls(self.tokenizer, tools=tools)
+                except TypeError:
+                    tp = self.tool_parser_cls(self.tokenizer)
                 info = tp.extract_tool_calls(content, request=None)
                 if info.tools_called:
                     content = info.content or ""
