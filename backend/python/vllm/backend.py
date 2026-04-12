@@ -183,13 +183,26 @@ class BackendServicer(backend_pb2_grpc.BackendServicer):
             return backend_pb2.Result(success=False, message=f"Unexpected {err=}, {type(err)=}")
 
         try:
-           engine_model_config = await self.llm.get_model_config()
-           self.tokenizer = get_tokenizer(
-               engine_model_config.tokenizer,
-               tokenizer_mode=engine_model_config.tokenizer_mode,
-               trust_remote_code=engine_model_config.trust_remote_code,
-               truncation_side="left",
-           )
+            # vLLM >= 0.14 removed get_model_config() on AsyncLLM; the tokenizer
+            # is either already loaded on the engine or can be built from the
+            # Model name directly.
+            tokenizer = None
+            if hasattr(self.llm, "get_tokenizer"):
+                try:
+                    tokenizer = await self.llm.get_tokenizer()
+                except TypeError:
+                    tokenizer = self.llm.get_tokenizer()
+                except Exception:
+                    tokenizer = None
+            if tokenizer is None and hasattr(self.llm, "tokenizer"):
+                tokenizer = self.llm.tokenizer
+            if tokenizer is None:
+                tokenizer = get_tokenizer(
+                    request.Model,
+                    trust_remote_code=bool(request.TrustRemoteCode),
+                    truncation_side="left",
+                )
+            self.tokenizer = tokenizer
         except Exception as err:
             return backend_pb2.Result(success=False, message=f"Unexpected {err=}, {type(err)=}")
 

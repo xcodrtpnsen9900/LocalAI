@@ -26,6 +26,12 @@ if [ "x${BUILD_PROFILE}" == "xintel" ]; then
     EXTRA_PIP_INSTALL_FLAGS+=" --upgrade --index-strategy=unsafe-first-match"
 fi
 
+# CPU builds need unsafe-best-match to pull torch==2.10.0+cpu from the
+# pytorch test channel while still resolving transformers/vllm from pypi.
+if [ "x${BUILD_PROFILE}" == "xcpu" ]; then
+    EXTRA_PIP_INSTALL_FLAGS+=" --index-strategy=unsafe-best-match"
+fi
+
 # We don't embed this into the images as it is a large dependency and not always needed.
 # Besides, the speed inference are not actually usable in the current state for production use-cases.
 if [ "x${BUILD_TYPE}" == "x" ] && [ "x${FROM_SOURCE:-}" == "xtrue" ]; then
