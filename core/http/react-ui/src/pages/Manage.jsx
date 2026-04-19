@@ -11,6 +11,22 @@ const TABS = [
   { key: 'backends', label: 'Backends', icon: 'fa-server' },
 ]
 
+// formatInstalledAt renders an installed_at timestamp as a short relative/abs
+// string suitable for dense tables. Returns the raw value if parsing fails so
+// we never display "Invalid Date".
+function formatInstalledAt(value) {
+  if (!value) return '—'
+  const d = new Date(value)
+  if (isNaN(d.getTime())) return value
+  const now = Date.now()
+  const diffMin = Math.floor((now - d.getTime()) / 60000)
+  if (diffMin < 1) return 'just now'
+  if (diffMin < 60) return `${diffMin}m ago`
+  if (diffMin < 60 * 24) return `${Math.floor(diffMin / 60)}h ago`
+  if (diffMin < 60 * 24 * 30) return `${Math.floor(diffMin / (60 * 24))}d ago`
+  return d.toISOString().slice(0, 10)
+}
+
 export default function Manage() {
   const { addToast } = useOutletContext()
   const navigate = useNavigate()
@@ -196,6 +212,29 @@ export default function Manage() {
     }
   }
 
+  const [upgradingAll, setUpgradingAll] = useState(false)
+  const [showOnlyUpgradable, setShowOnlyUpgradable] = useState(false)
+  const handleUpgradeAll = async () => {
+    const names = Object.keys(upgrades)
+    if (names.length === 0) return
+    setUpgradingAll(true)
+    try {
+      // Serial upgrade — matches the gallery's Upgrade All behavior.
+      // Each backend upgrade is itself a cluster-wide fan-out, so parallel
+      // calls would multiply load on every worker.
+      for (const name of names) {
+        try {
+          await backendsApi.upgrade(name)
+        } catch (err) {
+          addToast(`Upgrade failed for ${name}: ${err.message}`, 'error')
+        }
+      }
+      addToast(`Upgrade started for ${names.length} backend${names.length === 1 ? '' : 's'}`, 'info')
+    } finally {
+      setUpgradingAll(false)
+    }
+  }
+
   const handleDeleteBackend = (name) => {
     setConfirmDialog({
       title: 'Delete Backend',
@@ -227,18 +266,26 @@ export default function Manage() {
 
       {/* Tabs */}
       <div className="tabs" style={{ marginTop: 'var(--spacing-lg)', marginBottom: 'var(--spacing-md)' }}>
-        {TABS.map(t => (
-          <button
-            key={t.key}
-            className={`tab ${activeTab === t.key ? 'tab-active' : ''}`}
-            onClick={() => handleTabChange(t.key)}
-          >
-            <i className={`fas ${t.icon}`} style={{ marginRight: 6 }} />
-            {t.label}
-            {t.key === 'models' && !modelsLoading && ` (${models.length})`}
-            {t.key === 'backends' && !backendsLoading && ` (${backends.length})`}
-          </button>
-        ))}
+        {TABS.map(t => {
+          const upgradeCount = t.key === 'backends' ? Object.keys(upgrades).length : 0
+          return (
+            <button
+              key={t.key}
+              className={`tab ${activeTab === t.key ? 'tab-active' : ''}`}
+              onClick={() => handleTabChange(t.key)}
+            >
+              <i className={`fas ${t.icon}`} style={{ marginRight: 6 }} />
+              {t.label}
+              {t.key === 'models' && !modelsLoading && ` (${models.length})`}
+              {t.key === 'backends' && !backendsLoading && ` (${backends.length})`}
+              {upgradeCount > 0 && (
+                <span className="tab-pill tab-pill--warning" title={`${upgradeCount} update${upgradeCount === 1 ? '' : 's'} available`}>
+                  <i className="fas fa-arrow-up" /> {upgradeCount}
+                </span>
+              )}
+            </button>
+          )
+        })}
       </div>
 
       {/* Models Tab */}
@@ -399,6 +446,36 @@ export default function Manage() {
       {/* Backends Tab */}
       {activeTab === 'backends' && (
       <div>
+        {/* Upgrade banner — mirrors the gallery so operators can't miss updates */}
+        {!backendsLoading && Object.keys(upgrades).length > 0 && (
+          <div className="upgrade-banner">
+            <div className="upgrade-banner__text">
+              <i className="fas fa-arrow-up" />
+              <span>
+                {Object.keys(upgrades).length} backend{Object.keys(upgrades).length === 1 ? ' has' : 's have'} updates available
+              </span>
+            </div>
+            <div className="upgrade-banner__actions">
+              <button
+                className="btn btn-ghost btn-sm"
+                onClick={() => setShowOnlyUpgradable(v => !v)}
+                title={showOnlyUpgradable ? 'Show all backends' : 'Show only backends with updates'}
+              >
+                <i className={`fas ${showOnlyUpgradable ? 'fa-filter-circle-xmark' : 'fa-filter'}`} />
+                {showOnlyUpgradable ? ' Show all' : ' Updates only'}
+              </button>
+              <button
+                className="btn btn-primary btn-sm"
+                onClick={handleUpgradeAll}
+                disabled={upgradingAll}
+              >
+                <i className={`fas ${upgradingAll ? 'fa-spinner fa-spin' : 'fa-arrow-up'}`} />
+                {upgradingAll ? ' Upgrading...' : ' Upgrade all'}
+              </button>
+            </div>
+          </div>
+        )}
+
         {backendsLoading ? (
           <div style={{ textAlign: 'center', padding: 'var(--spacing-md)', color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
             Loading backends...
@@ -419,109 +496,177 @@ export default function Manage() {
               </a>
             </div>
           </div>
-        ) : (
+        ) : (() => {
+          const visibleBackends = showOnlyUpgradable
+            ? backends.filter(b => upgrades[b.Name])
+            : backends
+          if (visibleBackends.length === 0) {
+            return (
+              <div className="empty-state">
+                <i className="fas fa-filter" />
+                <p>No backends match the current filter.</p>
+                <button className="btn btn-ghost btn-sm" onClick={() => setShowOnlyUpgradable(false)}>Clear filter</button>
+              </div>
+            )
+          }
+          return (
           <div className="table-container">
             <table className="table">
               <thead>
                 <tr>
                   <th>Name</th>
                   <th>Type</th>
-                  <th>Metadata</th>
+                  <th>Version</th>
+                  {distributedMode && <th>Nodes</th>}
+                  <th>Installed</th>
                   <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
-                {backends.map((backend, i) => (
+                {visibleBackends.map((backend, i) => {
+                  const upgradeInfo = upgrades[backend.Name]
+                  const hasDrift = upgradeInfo?.node_drift?.length > 0
+                  const nodes = backend.Nodes || backend.nodes || []
+                  return (
                   <tr key={backend.Name || i}>
                     <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 'var(--spacing-sm)' }}>
-                        <i className="fas fa-cog" style={{ color: 'var(--color-accent)', fontSize: '0.75rem' }} />
-                        <span style={{ fontWeight: 500 }}>{backend.Name}</span>
+                      <div className="cell-name">
+                        <i className="fas fa-cog" />
+                        <span>{backend.Name}</span>
+                        {backend.Metadata?.alias && (
+                          <span className="cell-subtle">alias: {backend.Metadata.alias}</span>
+                        )}
+                        {backend.Metadata?.meta_backend_for && (
+                          <span className="cell-subtle">for: {backend.Metadata.meta_backend_for}</span>
+                        )}
                       </div>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', gap: '4px', flexWrap: 'wrap' }}>
+                      <div className="badge-row">
                         {backend.IsSystem ? (
-                          <span className="badge badge-info" style={{ fontSize: '0.625rem' }}>
-                            <i className="fas fa-shield-alt" style={{ fontSize: '0.5rem', marginRight: 2 }} />System
+                          <span className="badge badge-info">
+                            <i className="fas fa-shield-alt" /> System
                           </span>
                         ) : (
-                          <span className="badge badge-success" style={{ fontSize: '0.625rem' }}>
-                            <i className="fas fa-download" style={{ fontSize: '0.5rem', marginRight: 2 }} />User
+                          <span className="badge badge-success">
+                            <i className="fas fa-download" /> User
                           </span>
                         )}
                         {backend.IsMeta && (
-                          <span className="badge" style={{ background: 'var(--color-accent-light)', color: 'var(--color-accent)', fontSize: '0.625rem' }}>
-                            <i className="fas fa-layer-group" style={{ fontSize: '0.5rem', marginRight: 2 }} />Meta
+                          <span className="badge badge-accent">
+                            <i className="fas fa-layer-group" /> Meta
                           </span>
                         )}
                       </div>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 2, fontSize: '0.75rem', color: 'var(--color-text-secondary)' }}>
-                        {backend.Metadata?.alias && (
-                          <span>
-                            <i className="fas fa-tag" style={{ fontSize: '0.5rem', marginRight: 4 }} />
-                            Alias: <span style={{ color: 'var(--color-text-primary)' }}>{backend.Metadata.alias}</span>
+                      <div className="cell-stack">
+                        {backend.Metadata?.version ? (
+                          <span className="cell-mono">v{backend.Metadata.version}</span>
+                        ) : (
+                          <span className="cell-muted">—</span>
+                        )}
+                        {upgradeInfo && (
+                          <span className="badge badge-warning" title={upgradeInfo.available_version ? `Upgrade to v${upgradeInfo.available_version}` : 'Update available'}>
+                            <i className="fas fa-arrow-up" />
+                            {upgradeInfo.available_version ? ` v${upgradeInfo.available_version}` : ' Update available'}
                           </span>
                         )}
-                        {backend.Metadata?.meta_backend_for && (
-                          <span>
-                            <i className="fas fa-link" style={{ fontSize: '0.5rem', marginRight: 4 }} />
-                            For: <span style={{ color: 'var(--color-accent)' }}>{backend.Metadata.meta_backend_for}</span>
+                        {hasDrift && (
+                          <span
+                            className="badge badge-warning"
+                            title={`Drift: ${upgradeInfo.node_drift.map(d => `${d.node_name}${d.version ? ' v' + d.version : ''}`).join(', ')}`}
+                          >
+                            <i className="fas fa-code-branch" />
+                            {' '}Drift: {upgradeInfo.node_drift.length} node{upgradeInfo.node_drift.length === 1 ? '' : 's'}
                           </span>
                         )}
-                        {backend.Metadata?.version && (
-                          <span>
-                            <i className="fas fa-code-branch" style={{ fontSize: '0.5rem', marginRight: 4 }} />
-                            Version: <span style={{ color: 'var(--color-text-primary)' }}>v{backend.Metadata.version}</span>
-                            {upgrades[backend.Name] && (
-                              <span style={{ color: '#856404', marginLeft: 4 }}>
-                                → v{upgrades[backend.Name].available_version}
+                      </div>
+                    </td>
+                    {distributedMode && (
+                      <td>
+                        {nodes.length === 0 ? (
+                          <span className="cell-muted">—</span>
+                        ) : nodes.length <= 3 ? (
+                          <div className="badge-row">
+                            {nodes.map(n => (
+                              <span
+                                key={n.node_id || n.NodeID}
+                                className={`badge ${(n.node_status || n.NodeStatus) === 'healthy' ? 'badge-success' : 'badge-warning'}`}
+                                title={`${n.node_name || n.NodeName} — ${n.node_status || n.NodeStatus}`}
+                              >
+                                <i className="fas fa-server" /> {n.node_name || n.NodeName}
                               </span>
-                            )}
-                          </span>
-                        )}
-                        {backend.Metadata?.installed_at && (
-                          <span>
-                            <i className="fas fa-calendar" style={{ fontSize: '0.5rem', marginRight: 4 }} />
-                            {backend.Metadata.installed_at}
-                          </span>
-                        )}
-                        {!backend.Metadata?.alias && !backend.Metadata?.meta_backend_for && !backend.Metadata?.installed_at && '—'}
-                      </div>
+                            ))}
+                          </div>
+                        ) : (() => {
+                          const total = nodes.length
+                          const offline = nodes.filter(n => {
+                            const s = n.node_status || n.NodeStatus
+                            return s !== 'healthy' && s !== 'draining'
+                          }).length
+                          return (
+                            <span
+                              className={`badge ${offline > 0 ? 'badge-warning' : 'badge-info'}`}
+                              title={nodes.map(n => `${n.node_name || n.NodeName} (${n.node_status || n.NodeStatus})`).join('\n')}
+                            >
+                              <i className="fas fa-server" /> on {total} nodes{offline > 0 ? ` · ${offline} offline` : ''}
+                            </span>
+                          )
+                        })()}
+                      </td>
+                    )}
+                    <td>
+                      <span className="cell-muted cell-mono">
+                        {backend.Metadata?.installed_at ? formatInstalledAt(backend.Metadata.installed_at) : '—'}
+                      </span>
                     </td>
                     <td>
-                      <div style={{ display: 'flex', gap: 'var(--spacing-xs)', justifyContent: 'flex-end' }}>
-                        {!backend.IsSystem ? (
+                      <div className="row-actions">
+                        {backend.IsSystem ? (
+                          <span className="badge" title="System backends are managed outside the gallery">
+                            <i className="fas fa-lock" /> Protected
+                          </span>
+                        ) : (
                           <>
+                            {upgradeInfo ? (
+                              <button
+                                className="btn btn-primary btn-sm"
+                                onClick={() => handleUpgradeBackend(backend.Name)}
+                                disabled={reinstallingBackends.has(backend.Name)}
+                              >
+                                <i className={`fas ${reinstallingBackends.has(backend.Name) ? 'fa-spinner fa-spin' : 'fa-arrow-up'}`} />
+                                {' '}Upgrade{upgradeInfo.available_version ? ` to v${upgradeInfo.available_version}` : ''}
+                              </button>
+                            ) : (
+                              <button
+                                className="btn btn-secondary btn-sm"
+                                onClick={() => handleReinstallBackend(backend.Name)}
+                                disabled={reinstallingBackends.has(backend.Name)}
+                              >
+                                <i className={`fas ${reinstallingBackends.has(backend.Name) ? 'fa-spinner fa-spin' : 'fa-rotate'}`} />
+                                {' '}Reinstall
+                              </button>
+                            )}
                             <button
-                              className={`btn ${upgrades[backend.Name] ? 'btn-primary' : 'btn-secondary'} btn-sm`}
-                              onClick={() => upgrades[backend.Name] ? handleUpgradeBackend(backend.Name) : handleReinstallBackend(backend.Name)}
-                              disabled={reinstallingBackends.has(backend.Name)}
-                              title={upgrades[backend.Name] ? `Upgrade to v${upgrades[backend.Name]?.available_version || 'latest'}` : 'Reinstall'}
-                            >
-                              <i className={`fas ${reinstallingBackends.has(backend.Name) ? 'fa-spinner fa-spin' : upgrades[backend.Name] ? 'fa-arrow-up' : 'fa-rotate'}`} />
-                            </button>
-                            <button
-                              className="btn btn-danger btn-sm"
+                              className="btn btn-danger-ghost btn-sm"
                               onClick={() => handleDeleteBackend(backend.Name)}
-                              title="Delete"
+                              title="Delete backend (removes from all nodes)"
                             >
                               <i className="fas fa-trash" />
                             </button>
                           </>
-                        ) : (
-                          <span style={{ fontSize: '0.75rem', color: 'var(--color-text-muted)' }}>—</span>
                         )}
                       </div>
                     </td>
                   </tr>
-                ))}
+                  )
+                })}
               </tbody>
             </table>
           </div>
-        )}
+          )
+        })()}
       </div>
       )}
 
