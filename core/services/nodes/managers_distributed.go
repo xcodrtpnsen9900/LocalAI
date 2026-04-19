@@ -10,6 +10,7 @@ import (
 	"github.com/mudler/LocalAI/core/gallery"
 	"github.com/mudler/LocalAI/core/services/galleryop"
 	"github.com/mudler/LocalAI/pkg/model"
+	"github.com/mudler/LocalAI/pkg/system"
 	"github.com/mudler/xlog"
 	"github.com/nats-io/nats.go"
 )
@@ -53,6 +54,7 @@ type DistributedBackendManager struct {
 	adapter          *RemoteUnloaderAdapter
 	registry         *NodeRegistry
 	backendGalleries []config.Gallery
+	systemState      *system.SystemState
 }
 
 // NewDistributedBackendManager creates a DistributedBackendManager.
@@ -62,6 +64,7 @@ func NewDistributedBackendManager(appConfig *config.ApplicationConfig, ml *model
 		adapter:          adapter,
 		registry:         registry,
 		backendGalleries: appConfig.BackendGalleries,
+		systemState:      appConfig.SystemState,
 	}
 }
 
@@ -101,7 +104,14 @@ func (d *DistributedBackendManager) DeleteBackend(name string) error {
 	return errors.Join(errs...)
 }
 
-// ListBackends aggregates installed backends from all healthy worker nodes.
+// ListBackends aggregates installed backends from all worker nodes, preserving
+// per-node attribution. Each SystemBackend.Nodes entry records which node has
+// the backend and the version/digest it reports. The top-level Metadata is
+// populated from the first node seen so single-node-minded callers still work.
+//
+// Pending/offline/draining nodes are skipped because they aren't expected to
+// answer NATS requests; unhealthy nodes are still queried — ErrNoResponders
+// then marks them unhealthy and the loop continues.
 func (d *DistributedBackendManager) ListBackends() (gallery.SystemBackends, error) {
 	result := make(gallery.SystemBackends)
 	allNodes, err := d.registry.List(context.Background())
@@ -110,7 +120,7 @@ func (d *DistributedBackendManager) ListBackends() (gallery.SystemBackends, erro
 	}
 
 	for _, node := range allNodes {
-		if node.Status != StatusHealthy {
+		if node.Status == StatusPending || node.Status == StatusOffline || node.Status == StatusDraining {
 			continue
 		}
 		reply, err := d.adapter.ListBackends(node.ID)
@@ -128,17 +138,33 @@ func (d *DistributedBackendManager) ListBackends() (gallery.SystemBackends, erro
 			continue
 		}
 		for _, b := range reply.Backends {
-			if _, exists := result[b.Name]; !exists {
-				result[b.Name] = gallery.SystemBackend{
+			ref := gallery.NodeBackendRef{
+				NodeID:      node.ID,
+				NodeName:    node.Name,
+				NodeStatus:  node.Status,
+				Version:     b.Version,
+				Digest:      b.Digest,
+				URI:         b.URI,
+				InstalledAt: b.InstalledAt,
+			}
+			entry, exists := result[b.Name]
+			if !exists {
+				entry = gallery.SystemBackend{
 					Name:     b.Name,
 					IsSystem: b.IsSystem,
 					IsMeta:   b.IsMeta,
 					Metadata: &gallery.BackendMetadata{
+						Name:        b.Name,
 						InstalledAt: b.InstalledAt,
 						GalleryURL:  b.GalleryURL,
+						Version:     b.Version,
+						URI:         b.URI,
+						Digest:      b.Digest,
 					},
 				}
 			}
+			entry.Nodes = append(entry.Nodes, ref)
+			result[b.Name] = entry
 		}
 	}
 	return result, nil
@@ -209,8 +235,21 @@ func (d *DistributedBackendManager) UpgradeBackend(ctx context.Context, name str
 	return errors.Join(errs...)
 }
 
-// CheckUpgrades checks for available backend upgrades.
-// Gallery comparison is global (not per-node), so we delegate to the local manager.
+// CheckUpgrades checks for available backend upgrades across the cluster.
+//
+// The previous implementation delegated to d.local, which called
+// ListSystemBackends on the frontend — but in distributed mode the frontend
+// has no backends installed locally, so the upgrade loop never ran and the UI
+// never surfaced any upgrades. We now feed the cluster-wide aggregation
+// (including per-node versions/digests) into gallery.CheckUpgradesAgainst so
+// digest-based detection actually works and cluster drift is visible.
 func (d *DistributedBackendManager) CheckUpgrades(ctx context.Context) (map[string]gallery.UpgradeInfo, error) {
-	return d.local.CheckUpgrades(ctx)
+	installed, err := d.ListBackends()
+	if err != nil {
+		return nil, err
+	}
+	// systemState is used by AvailableBackends (gallery paths + meta-backend
+	// resolution). The `installed` argument is what the old code got wrong —
+	// it used to come from the empty frontend filesystem.
+	return gallery.CheckUpgradesAgainst(ctx, d.backendGalleries, d.systemState, installed)
 }
