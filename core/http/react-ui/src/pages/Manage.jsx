@@ -3,6 +3,7 @@ import { useNavigate, useOutletContext, useSearchParams } from 'react-router-dom
 import ResourceMonitor from '../components/ResourceMonitor'
 import ConfirmDialog from '../components/ConfirmDialog'
 import Toggle from '../components/Toggle'
+import NodeDistributionChip from '../components/NodeDistributionChip'
 import { useModels } from '../hooks/useModels'
 import { backendControlApi, modelsApi, backendsApi, systemApi, nodesApi } from '../utils/api'
 
@@ -418,24 +419,10 @@ export default function Manage() {
                             <i className="fas fa-ban" /> Disabled
                           </span>
                         ) : model.loaded_on && model.loaded_on.length > 0 ? (
-                          // Distributed: surface where the model is actually loaded
-                          // so operators don't have to expand each node manually.
-                          <div className="badge-row">
-                            {model.loaded_on.slice(0, 3).map(l => (
-                              <span
-                                key={l.node_id}
-                                className={`badge ${l.state === 'loaded' ? 'badge-success' : l.state === 'loading' ? 'badge-info' : 'badge-warning'}`}
-                                title={`${l.node_name} — ${l.state} (${l.node_status})`}
-                              >
-                                <i className="fas fa-server" /> {l.node_name}
-                              </span>
-                            ))}
-                            {model.loaded_on.length > 3 && (
-                              <span className="badge" title={model.loaded_on.map(l => `${l.node_name} (${l.state})`).join('\n')}>
-                                +{model.loaded_on.length - 3}
-                              </span>
-                            )}
-                          </div>
+                          // Distributed mode: surface where the model is
+                          // actually loaded. Shared chip scales to any cluster
+                          // size (inline for <=3, popover for larger).
+                          <NodeDistributionChip nodes={model.loaded_on} context="models" />
                         ) : loadedModelIds.has(model.id) ? (
                           <span className="badge badge-success">
                             <i className="fas fa-circle" style={{ fontSize: '6px' }} /> Running
@@ -645,35 +632,7 @@ export default function Manage() {
                     </td>
                     {distributedMode && (
                       <td>
-                        {nodes.length === 0 ? (
-                          <span className="cell-muted">—</span>
-                        ) : nodes.length <= 3 ? (
-                          <div className="badge-row">
-                            {nodes.map(n => (
-                              <span
-                                key={n.node_id || n.NodeID}
-                                className={`badge ${(n.node_status || n.NodeStatus) === 'healthy' ? 'badge-success' : 'badge-warning'}`}
-                                title={`${n.node_name || n.NodeName} — ${n.node_status || n.NodeStatus}`}
-                              >
-                                <i className="fas fa-server" /> {n.node_name || n.NodeName}
-                              </span>
-                            ))}
-                          </div>
-                        ) : (() => {
-                          const total = nodes.length
-                          const offline = nodes.filter(n => {
-                            const s = n.node_status || n.NodeStatus
-                            return s !== 'healthy' && s !== 'draining'
-                          }).length
-                          return (
-                            <span
-                              className={`badge ${offline > 0 ? 'badge-warning' : 'badge-info'}`}
-                              title={nodes.map(n => `${n.node_name || n.NodeName} (${n.node_status || n.NodeStatus})`).join('\n')}
-                            >
-                              <i className="fas fa-server" /> on {total} nodes{offline > 0 ? ` · ${offline} offline` : ''}
-                            </span>
-                          )
-                        })()}
+                        <NodeDistributionChip nodes={nodes} context="backends" />
                       </td>
                     )}
                     <td>
