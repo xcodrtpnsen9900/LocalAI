@@ -1,0 +1,47 @@
+From: LocalAI turboquant backend maintainers <noreply@localai.io>
+Subject: ggml-hip: add F16-K + TURBO-V fattn-vec template instances
+
+Upstream commit fa4e8be0a0ce ("fix(cuda): add F16-K + TURBO-V dispatch cases
+in fattn.cu") added three new template instance files under ggml-cuda/:
+
+  - fattn-vec-instance-f16-turbo2_0.cu
+  - fattn-vec-instance-f16-turbo3_0.cu
+  - fattn-vec-instance-f16-turbo4_0.cu
+
+and registered them in ggml/src/ggml-cuda/CMakeLists.txt. The companion
+dispatch cases FATTN_VEC_CASES_ALL_D(GGML_TYPE_F16, GGML_TYPE_TURBO{2,3,4}_0)
+were added to ggml/src/ggml-cuda/fattn.cu, which is shared with the HIP
+build path via hipify.
+
+However, ggml/src/ggml-hip/CMakeLists.txt carries its own explicit list of
+template instance sources (used when GGML_CUDA_FA_ALL_QUANTS is OFF, which
+is the default) and was never updated for the new F16-K + TURBO-V combos.
+The HIP build therefore compiles the dispatch cases (which reference
+ggml_cuda_flash_attn_ext_vec_case<D, F16, TURBO*>) without ever compiling
+the matching template instantiations, causing a link-time failure in the
+-gpu-rocm-hipblas-turboquant CI job.
+
+Add the three new template instance files to ggml-hip's list so the HIP
+build links cleanly. Drop this patch once the fork picks up the
+corresponding upstream sync in ggml-hip/CMakeLists.txt.
+
+--- a/ggml/src/ggml-hip/CMakeLists.txt
++++ b/ggml/src/ggml-hip/CMakeLists.txt
+@@ -85,14 +85,17 @@ else()
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo3_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-q8_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo3_0.cu
++        ../ggml-cuda/template-instances/fattn-vec-instance-f16-turbo3_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo2_0-turbo2_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo2_0-q8_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo2_0.cu
++        ../ggml-cuda/template-instances/fattn-vec-instance-f16-turbo2_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo2_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo2_0-turbo3_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo4_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-q8_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-q8_0-turbo4_0.cu
++        ../ggml-cuda/template-instances/fattn-vec-instance-f16-turbo4_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo3_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-turbo4_0.cu
+         ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-turbo2_0.cu
