@@ -23,6 +23,15 @@ if [ "x${BUILD_PROFILE}" == "xcpu" ]; then
     EXTRA_PIP_INSTALL_FLAGS+=" --index-strategy=unsafe-best-match"
 fi
 
+# JetPack 7 / L4T arm64 wheels are built for cp312 and shipped via
+# pypi.jetson-ai-lab.io. Bump the venv Python so the prebuilt sglang
+# wheel resolves cleanly.
+if [ "x${BUILD_PROFILE}" == "xl4t13" ]; then
+    PYTHON_VERSION="3.12"
+    PYTHON_PATCH="12"
+    PY_STANDALONE_TAG="20251120"
+fi
+
 # sglang's CPU path has no prebuilt wheel on PyPI — upstream publishes
 # a separate pyproject_cpu.toml that must be swapped in before `pip install`.
 # Reference: docker/xeon.Dockerfile in the sglang upstream repo.
